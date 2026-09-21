@@ -64,6 +64,7 @@
 <div class="sub" style="margin-top:10px">
   操作 — 玩家1(左): <span class="kbd">A</span><span class="kbd">D</span> 移动 <span class="kbd">空格</span> 跳跃 <span class="kbd">J</span> 攻击 <span class="kbd">K</span> 格挡 ｜
   玩家2(右): <span class="kbd">←</span><span class="kbd">→</span> 移动 <span class="kbd">↑</span> 跳跃 <span class="kbd">.</span> 攻击 <span class="kbd">,</span> 格挡 ｜
+  单人模式（果蝇 vs 玩家 / 玩家 vs 电脑）两套键位通用 ｜
   <span class="kbd">Enter</span> 开始 / 返回菜单
 </div>
 
@@ -345,11 +346,17 @@ class Fighter{
 
 // ---------- 控制器 ----------
 class HumanCtrl{
-  constructor(map){this.map=map;}
+  constructor(map){this.map=map;} // 每个动作可为单键或键数组
+  _any(a){return Array.isArray(a)?a.some(k=>keys[k]):!!keys[a];}
+  _hit(a){const ks=Array.isArray(a)?a:[a];const v=ks.some(k=>consume(k));ks.forEach(k=>pressed[k]=false);return v;}
   get(){const m=this.map;
-    return{left:!!keys[m.left],right:!!keys[m.right],attack:consume(m.attack),
-      block:!!keys[m.block],jump:consume(m.jump)};}
+    return{left:this._any(m.left),right:this._any(m.right),attack:this._hit(m.attack),
+      block:this._any(m.block),jump:this._hit(m.jump)};}
 }
+// 单人模式下玩家可任选一套键位
+const MAP1={left:['a','arrowleft'],right:['d','arrowright'],attack:['j','.'],block:['k',','],jump:[' ','arrowup']};
+const MAP_P1={left:'a',right:'d',attack:'j',block:'k',jump:' '};
+const MAP_P2={left:'arrowleft',right:'arrowright',attack:'.',block:',',jump:'arrowup'};
 class BotCtrl{
   constructor(){this.blockT=0;this.retreatT=0;this.pauseT=0;}
   get(f,opp){
@@ -408,8 +415,9 @@ function startMode(id){
   state.p2=new Fighter(fn(M.p2),M.p2,W*0.72);
   state.fly=wantFly?getBrain(M.opp):null;
   if(state.fly)state.fly.roundStarted();
-  state.ctrl1=M.p1==='fly'?new FlyCtrl(state.fly):M.p1==='bot'?new BotCtrl():new HumanCtrl({left:'a',right:'d',attack:'j',block:'k',jump:' '});
-  state.ctrl2=M.p2==='fly'?new FlyCtrl(state.fly):M.p2==='bot'?new BotCtrl():new HumanCtrl({left:'arrowleft',right:'arrowright',attack:'.',block:',',jump:'arrowup'});
+  const soloHuman=(M.p1==='human')!==(M.p2==='human'); // 只有一个玩家时两套键位通用
+  state.ctrl1=M.p1==='fly'?new FlyCtrl(state.fly):M.p1==='bot'?new BotCtrl():new HumanCtrl(soloHuman?MAP1:MAP_P1);
+  state.ctrl2=M.p2==='fly'?new FlyCtrl(state.fly):M.p2==='bot'?new BotCtrl():new HumanCtrl(soloHuman?MAP1:MAP_P2);
   document.querySelectorAll('#modes button[data-mode]').forEach(el=>el.classList.toggle('active',el.dataset.mode===id));
   resetRound();
   log('=== 开始：'+M.label+' · 三局两胜 ===','ev-win');
@@ -422,7 +430,10 @@ function onEnter(){
   if(state.phase==='over'){state.screen='menu';state.fly=null;
     document.querySelectorAll('#modes button[data-mode]').forEach(el=>el.classList.remove('active'));}
 }
-document.querySelectorAll('#modes button[data-mode]').forEach(el=>el.addEventListener('click',()=>startMode(el.dataset.mode)));
+document.querySelectorAll('#modes button[data-mode]').forEach(el=>el.addEventListener('click',e=>{
+  e.currentTarget.blur();  // 防止空格/回车再次触发按钮
+  startMode(el.dataset.mode);
+}));
 document.getElementById('btnReset').addEventListener('click',()=>{
   for(const k in brains)brains[k].reset();
   try{for(const t of ['bot','human'])localStorage.removeItem('doomfly_fight_brain_v2_'+t);}catch(_){}
