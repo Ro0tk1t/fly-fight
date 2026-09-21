@@ -1,2 +1,2 @@
 # 原始连接组数据（2.1GB，不入库；重新生成 brain-data.js 前需本地下载）
-data/
+data/*.feather
