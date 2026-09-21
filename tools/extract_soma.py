@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """提取全脑实测胞体坐标 → soma-data.js（3D 全脑神经元活动面板）
-来源：body-annotations.feather 的 somaLocation（nm）与 somaSide（L/R）。
+来源：annotations.feather 的 somaLocation（nm）与 somaSide（L/R）。
 """
 import base64
 import json
@@ -15,7 +15,7 @@ OUT = ROOT / "soma-data.js"
 BRAIN = ROOT / "brain-data.js"
 
 t = pf.read_table(
-    DATA / "body-annotations.feather", memory_map=True,
+    DATA / "annotations.feather", memory_map=True,
     columns=["bodyId", "somaLocation", "somaSide"],
 )
 sl = t.column("somaLocation").to_pylist()
@@ -41,7 +41,7 @@ print(f"sim neurons mapped to soma positions: {n_core}/{len(core)}")
 
 payload = {
     "provenance": {
-        "source": "body-annotations.feather somaLocation/somaSide (MaleCNS)",
+        "source": "annotations.feather somaLocation/somaSide (MaleCNS)",
         "neurons_total": int(t.num_rows),
         "neurons_with_soma": len(idx),
         "scale_nm": SCALE,

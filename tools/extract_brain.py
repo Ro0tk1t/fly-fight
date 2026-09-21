@@ -19,11 +19,11 @@ DATA = Path(__file__).resolve().parents[1] / "data"
 OUT = Path(__file__).resolve().parents[1] / "brain-data.js"
 
 ann = feather.read_table(
-    DATA / "body-annotations.feather",
+    DATA / "annotations.feather",
     columns=["bodyId", "hemibrainType", "type", "somaSide", "superclass"],
 ).to_pandas()
 ntt = feather.read_table(
-    DATA / "body-neurotransmitters.feather", columns=["body", "consensus_nt"]
+    DATA / "transmitters.feather", columns=["body", "consensus_nt"]
 ).to_pandas().drop_duplicates("body").set_index("body")["consensus_nt"]
 
 ann["ht"] = ann["hemibrainType"].astype(str)
@@ -89,7 +89,7 @@ ids = sorted(n["id"] for n in nodes)
 print(f"selected {len(nodes)} neurons, {len(ids)} unique ids")
 
 # --- load full edge table once ---
-w = feather.read_table(DATA / "connectome-weights.feather", memory_map=True)
+w = feather.read_table(DATA / "weights.feather", memory_map=True)
 ann_idx = ann.set_index("bodyId")
 
 def partners(ids_in, side, other_side, limit):
@@ -178,7 +178,7 @@ print(pairs.to_string())
 
 payload = {
     "provenance": {
-        "source": "connectome-weights.feather (MaleCNS-style)",
+        "source": "weights.feather (MaleCNS-style)",
         "total_edges_scanned": int(w.num_rows),
         "subgraph_edges": len(edges),
         "neurons": len(nodes),

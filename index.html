@@ -307,7 +307,7 @@ class Fighter{
   reset(){
     this.x=this.spawnX;this.hp=100;this.vx=0;this.atk=0;this.cd=0;
     this.blocking=false;this.hitstun=0;this.flash=0;this.facing=1;this.t=0;this.hasHit=false;
-    this.y=0;this.vy=0;
+    this.y=0;this.vy=0;this.moving=false;this.walkT=0;
   }
   get attacking(){return this.atk>0;}
   get grounded(){return this.y<=0;}
@@ -335,10 +335,13 @@ class Fighter{
     }else if(!stunned&&a.attack&&!this.blocking&&this.cd<=0){
       this.atk=1;this.hasHit=false;
     }
+    this.moving=false;
     if(!this.blocking&&this.atk===0&&!stunned){
       const air=this.grounded?1:0.85;
       if(a.left)this.x-=SPD*air;
       if(a.right)this.x+=SPD*air;
+      this.moving=this.grounded&&!!(a.left!==a.right);
+      if(this.moving)this.walkT++;
     }
     this.x=clamp(this.x,MARGIN,W-MARGIN);
   }
@@ -533,7 +536,8 @@ function drawFlySprite(f){
   g.beginPath();g.arc(fc*19,-4,4.2,0,Math.PI*2);g.fill();
   g.beginPath();g.arc(fc*15,-6,3.4,0,Math.PI*2);g.fill();
   if(f.blocking){g.strokeStyle='rgba(230,230,240,0.8)';g.lineWidth=2;
-    g.beginPath();g.arc(fc*22,0,16,-1.1,1.1);g.stroke();}
+    const a0=fc>0?-1.1:Math.PI-1.1;   // 弧永远朝面朝方向外凸，避免面向左时嵌进身体
+    g.beginPath();g.arc(fc*22,0,16,a0,a0+2.2);g.stroke();}
   if(f.atk>ATK_STARTUP&&f.atk<=ATK_STARTUP+ATK_ACTIVE){
     g.strokeStyle='#fff';g.lineWidth=3;
     g.beginPath();g.moveTo(fc*24,-2);g.lineTo(fc*ATK_RANGE*0.8,-4);g.stroke();}
@@ -549,7 +553,20 @@ function drawHumanSprite(f,bot){
   const lunge=f.atk>ATK_STARTUP?fc*8:0;
   g.translate(lunge,0);
   g.strokeStyle=f.flash>0?'#fff':body;g.lineWidth=5;g.lineCap='round';
-  g.beginPath();g.moveTo(0,feet-38);g.lineTo(-8,feet);g.moveTo(0,feet-38);g.lineTo(9,feet);g.stroke();
+  const hip=feet-38;
+  g.beginPath();
+  if(!f.grounded){                                      // 空中：收腿/摆腿
+    const rise=f.vy>0;
+    g.moveTo(0,hip);g.lineTo(fc*7,hip+11);g.lineTo(fc*(rise?4:11),hip+(rise?18:24));
+    g.moveTo(0,hip);g.lineTo(-fc*4,hip+13);g.lineTo(-fc*10,hip+22);
+  }else if(f.moving){                                   // 行走：双腿交替摆动
+    const sw=Math.sin(f.walkT*0.32);
+    g.moveTo(0,hip);g.lineTo(fc*sw*5,hip+10);g.lineTo(fc*sw*11,feet-Math.max(0,sw)*5);
+    g.moveTo(0,hip);g.lineTo(-fc*sw*5,hip+10);g.lineTo(-fc*sw*11,feet-Math.max(0,-sw)*5);
+  }else{                                                // 站立
+    g.moveTo(0,hip);g.lineTo(-8,feet);g.moveTo(0,hip);g.lineTo(9,feet);
+  }
+  g.stroke();
   g.beginPath();g.moveTo(0,feet-38);g.lineTo(0,feet-66);g.stroke();
   g.fillStyle=f.flash>0?'#fff':body;
   g.beginPath();g.arc(fc*2,feet-76,9,0,Math.PI*2);g.fill();
