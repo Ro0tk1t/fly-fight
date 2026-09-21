@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract a compact, biologically-named connectome subgraph for DOOMFLY-FIGHT.
+"""Extract a compact, biologically-named connectome subgraph for FLY-FIGHT.
 
 Reads MaleCNS-style feather files and emits brain-data.js (const FLY_BRAIN = ...).
 Selection mirrors the doomfly interface: photoreceptors -> visual projection

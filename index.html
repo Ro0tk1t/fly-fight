@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DOOMFLY // FIGHT — 果蝇连接组格斗竞技场</title>
+<title>FLY-FIGHT — 果蝇连接组格斗竞技场</title>
 <style>
   :root{ --bg:#0a0a0a; --fg:#e6e6e6; --dim:#7a7a7a; --line:#2a2a2a;
     --fly:#9fd08a; --dopa:#e8b23a; --bad:#d86a6a; }
@@ -22,6 +22,10 @@
   #modes button.ghost{color:var(--dim)}
   main{display:flex;gap:14px;flex-wrap:wrap}
   canvas{border:1px solid var(--line);background:#0d0d0d}
+  #somaInfo{width:420px;border:1px solid var(--line);background:#0d0d0d;
+    padding:10px 14px;color:var(--dim);font-size:11px;line-height:1.8}
+  #somaInfo b{color:var(--fg)} #somaInfo .l{color:#5ac8be} #somaInfo .r{color:#e1aa5f}
+  #somaInfo .a{color:var(--dopa)}
   #telemetry{display:flex;gap:18px;flex-wrap:wrap;margin:12px 0 6px;color:var(--dim)}
   #telemetry b{color:var(--fg);font-weight:600}
   #log{border:1px solid var(--line);padding:8px 12px;height:130px;overflow-y:auto;
@@ -33,7 +37,7 @@
 </style>
 </head>
 <body>
-<h1>DOOMFLY // FIGHT <small>v0.2 · 果蝇由 data/ 目录的真实 MaleCNS 连接组子图驱动</small></h1>
+<h1>FLY-FIGHT <small>v0.3 · 果蝇由 data/ 目录的真实 MaleCNS 连接组子图驱动 · 全脑 3D 胞体活动面板</small></h1>
 <div class="sub">竞技场帧刺激 → 真实感光神经元(R1-R6/R7y/R8y) → 视觉投射神经元 → KC 肯扬细胞 → MBON(含 MBON11) → 下行运动神经元(DNp20 转向 / DNpe017 攻击 / 腿屈肌 MN 跳跃)。突触权重与符号来自 connectome-weights.feather（按突触数对数缩放，抑制性递质取负）。受击 → PPL101 多巴胺脉冲 → 塑形真实 KC→MBON11 突触。记忆跨回合持久保留。</div>
 
 <div id="modes">
@@ -46,6 +50,11 @@
 <main>
   <canvas id="game" width="920" height="440"></canvas>
   <canvas id="brain" width="420" height="440"></canvas>
+</main>
+
+<main id="stage3d">
+  <canvas id="brain3d" width="920" height="380"></canvas>
+  <div id="somaInfo">正在加载全脑胞体数据…</div>
 </main>
 
 <div id="telemetry">
@@ -76,10 +85,11 @@
 </footer>
 
 <script src="brain-data.js"></script>
+<script src="soma-data.js"></script>
 <script>
 'use strict';
 // ============================================================
-//  DOOMFLY // FIGHT v0.2 — 真实连接组驱动 + 跳跃
+//  FLY-FIGHT v0.3 — 真实连接组驱动 + 跳跃 + 全脑 3D 面板
 // ============================================================
 const W=920,H=440,GROUND=392,MARGIN=46,TICK=1000/60;
 const gcv=document.getElementById('game'),g=gcv.getContext('2d');
@@ -118,7 +128,8 @@ class ConnectomeFly{
   constructor(oppType){
     if(!window.FLY_BRAIN)throw new Error('FLY_BRAIN 未加载');
     this.oppType=oppType;
-    this.key='doomfly_fight_brain_v2_'+oppType;
+    this.key='fly_fight_brain_v2_'+oppType;
+    this.oldKey='doomfly_fight_brain_v2_'+oppType; // v0.2 之前的记忆键，加载后迁移
     const B=FLY_BRAIN;
     this.nodes=B.nodes.map(n=>({...n,a:0,base:0.5,sd:0.2}));
     const idx={}; this.nodes.forEach((n,i)=>idx[n.id]=i);
@@ -157,6 +168,10 @@ class ConnectomeFly{
   }
   load(){
     let raw=null;try{raw=localStorage.getItem(this.key);}catch(_){}
+    if(!raw){try{ // 迁移旧项目名下的持久记忆
+      raw=localStorage.getItem(this.oldKey);
+      if(raw){localStorage.setItem(this.key,raw);localStorage.removeItem(this.oldKey);}
+    }catch(_){}}
     if(raw){try{
       const d=JSON.parse(raw);
       for(const k in d.w){const i=+k;if(this.edges[i])this.edges[i].w=d.w[k];}
@@ -436,7 +451,7 @@ document.querySelectorAll('#modes button[data-mode]').forEach(el=>el.addEventLis
 }));
 document.getElementById('btnReset').addEventListener('click',()=>{
   for(const k in brains)brains[k].reset();
-  try{for(const t of ['bot','human'])localStorage.removeItem('doomfly_fight_brain_v2_'+t);}catch(_){}
+  try{for(const t of ['bot','human'])for(const k of ['fly_fight_brain_v2_','doomfly_fight_brain_v2_'])localStorage.removeItem(k+t);}catch(_){}
   log('神经记忆已清除：突触权重恢复为真实连接组原始值','ev-learn');
 });
 
@@ -592,7 +607,7 @@ function drawMenu(){
   drawArena();
   g.textAlign='center';
   g.font='700 30px monospace';g.fillStyle='#e6e6e6';
-  g.fillText('DOOMFLY // FIGHT',W/2,150);
+  g.fillText('FLY-FIGHT',W/2,150);
   g.font='13px monospace';g.fillStyle='#8a8a92';
   const info=window.FLY_BRAIN?
     '果蝇 = 真实连接组子图 ('+FLY_BRAIN.nodes.length+' 神经元 / '+FLY_BRAIN.edges.length+' 突触, MaleCNS)':
@@ -696,6 +711,125 @@ function renderTelemetry(){
   document.getElementById('tGen').textContent=fly?fly.stats.rounds:'—';
 }
 
+// ============================================================
+//  全脑 3D 神经元活动面板 — 实测胞体点云（soma-data.js）
+// ============================================================
+const c3=document.getElementById('brain3d'),g3=c3.getContext('2d');
+const OFF=document.createElement('canvas'),g3o=OFF.getContext('2d');
+let SOMA=null;
+function initSoma(){
+  if(!window.FLY_SOMA)return;
+  const B=FLY_SOMA;
+  const dec=s=>{const bin=atob(s);const u=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return u;};
+  const pos=new Uint16Array(dec(B.positions).buffer);
+  const n=pos.length/3;
+  const x=new Float32Array(n),y=new Float32Array(n),z=new Float32Array(n);
+  let cx=0,cy=0,cz=0;
+  for(let i=0;i<n;i++){
+    x[i]=pos[i*3]*B.scale;      // 原始轴：x=内外侧(ML)
+    y[i]=pos[i*3+2]*B.scale;    // z=前后(AP，向后为正) → 深度
+    z[i]=-pos[i*3+1]*B.scale;   // y=背腹(DV，腹侧为正) → 垂直轴取反，背朝上
+    cx+=x[i];cy+=y[i];cz+=z[i];
+  }
+  cx/=n;cy/=n;cz/=n;
+  let r=1;
+  for(let i=0;i<n;i++){x[i]-=cx;y[i]-=cy;z[i]-=cz;
+    r=Math.max(r,Math.abs(x[i]),Math.abs(y[i]),Math.abs(z[i]));}
+  for(let i=0;i<n;i++){x[i]/=r;y[i]/=r;z[i]/=r;}
+  OFF.width=460;OFF.height=190;
+  SOMA={n,x,y,z,sides:dec(B.sides),core:B.core,meta:B.provenance};
+  const m=SOMA.meta;
+  document.getElementById('somaInfo').innerHTML=
+    '<b>全脑胞体点云</b> · '+m.neurons_with_soma.toLocaleString()+' 个实测 soma（共 '+
+    m.neurons_total.toLocaleString()+' 个神经元），坐标来自 body-annotations.feather 的 somaLocation（nm，'+m.scale_nm+'nm/单位）。<br>'+
+    '口径：211,577 全标注行 → 166,700 神经元全集 → 有胞体坐标 141,781（其中 140,024 Traced）。'+
+    '常引用的 139,662 = 141,781 再剔除 2,119 个无 superclass 标注的，两者同源不矛盾。<br>'+
+    '<span class="l">● 左脑 (L)</span>　<span class="r">● 右脑 (R)</span>　● 中线/未知<br>'+
+    '格斗仿真中的 94 个神经元有 '+m.sim_neurons_mapped+' 个实测胞体，上场时按膜电位激活值实时发光：'+
+    '<span class="a">■ 高激活</span> / <span style="color:var(--fly)">■ 低激活</span>。<br>'+
+    '朝向按真实解剖轴：背朝上、头前腹后 — 脑在上方，腹神经索/躯干胞体向下后方延伸'+
+    '（轴判定依据：感光神经元 x 达 ±44µm 两侧视网膜、下行神经元位于脑后缘、VNC 胞体 z>66µm）。<br>'+
+    '其余 '+(m.neurons_with_soma-m.sim_neurons_mapped).toLocaleString()+' 个为真实位置静态呈现 — 本面板不虚构其活动。';
+}
+const view={yaw:0.7,pitch:0.42,zoom:1,drag:null};
+c3.addEventListener('pointerdown',e=>{view.drag=[e.clientX,e.clientY];
+  c3.setPointerCapture(e.pointerId);});
+c3.addEventListener('pointermove',e=>{if(!view.drag)return;
+  view.yaw+=(e.clientX-view.drag[0])*0.006;
+  view.pitch=clamp(view.pitch+(e.clientY-view.drag[1])*0.005,-1.25,1.25);
+  view.drag=[e.clientX,e.clientY];});
+addEventListener('pointerup',()=>{view.drag=null;});
+c3.addEventListener('wheel',e=>{e.preventDefault();
+  view.zoom=clamp(view.zoom*Math.exp(-e.deltaY*0.0012),0.5,6);},{passive:false});
+
+function proj3(h1,h2,v,WW,HH){
+  const cw=Math.cos(view.yaw),sw=Math.sin(view.yaw);
+  const cp=Math.cos(view.pitch),sp=Math.sin(view.pitch);
+  const a=h1*cw+h2*sw, b0=-h1*sw+h2*cw;
+  const v2=v*cp-b0*sp, b2=v*sp+b0*cp;
+  const s=3/(3+b2)*view.zoom*Math.min(WW,HH)*0.92;
+  return [WW/2+a*s,HH/2-v2*s,s,b2];
+}
+let img3=null,buf3=null,lum3=null,rafN=0;
+function drawSoma3D(){
+  rafN++;
+  if(!SOMA){
+    g3.fillStyle='#0d0d0d';g3.fillRect(0,0,c3.width,c3.height);
+    g3.fillStyle='#555';g3.font='12px monospace';
+    g3.fillText('soma-data.js 未加载 — 请运行 python3 tools/extract_soma.py',40,40);
+    return;
+  }
+  if(rafN%2&&view.drag===null&&state.screen==='match')return; // 对局中降频到 30fps
+  if(view.drag===null)view.yaw+=0.0012;                        // 空闲自转
+  const WW=OFF.width,HH=OFF.height;
+  if(!img3){img3=g3o.createImageData(WW,HH);buf3=new Uint32Array(img3.data.buffer);
+    lum3=new Float32Array(WW*HH);}
+  buf3.fill(0);lum3.fill(0);
+  const {n,x,y,z,sides}=SOMA;
+  const cw=Math.cos(view.yaw),sw=Math.sin(view.yaw);
+  const cp=Math.cos(view.pitch),sp=Math.sin(view.pitch);
+  const ps=Math.min(WW,HH)*0.92,zm=view.zoom;
+  for(let i=0;i<n;i++){
+    const h1=x[i],h2=y[i],v0=z[i];
+    const a=h1*cw+h2*sw, b0=-h1*sw+h2*cw;
+    const v2=v0*cp-b0*sp, b2=v0*sp+b0*cp;
+    const s=3/(3+b2)*zm;
+    const px=(WW/2+a*s*ps)|0, py=(HH/2-v2*s*ps)|0;
+    if(px<0||px>=WW||py<0||py>=HH)continue;
+    const br=0.16+0.6*(1-(b2+1)/2);
+    const side=sides[i];
+    const rr=(side===1?90:side===2?225:170)*br;
+    const gg=(side===1?200:side===2?170:170)*br;
+    const bb=(side===1?190:side===2?95:178)*br;
+    const k=py*WW+px,L=rr+gg+bb;
+    if(L>lum3[k]){lum3[k]=L;
+      buf3[k]=0xff000000|((bb|0)<<16)|((gg|0)<<8)|(rr|0);}
+  }
+  g3o.putImageData(img3,0,0);
+  g3.fillStyle='#0d0d0d';g3.fillRect(0,0,c3.width,c3.height);
+  g3.imageSmoothingEnabled=true;
+  g3.drawImage(OFF,0,0,c3.width,c3.height);
+  // 仿真神经元按激活值发光
+  const fly=state.fly;
+  if(fly){
+    for(let k=0;k<SOMA.core.length;k++){
+      const i=SOMA.core[k];if(i<0)continue;
+      const act=clamp(fly.nodes[k].a,0,1);
+      const [sx,sy]=proj3(SOMA.x[i],SOMA.y[i],SOMA.z[i],c3.width,c3.height);
+      const rad=1.4+4.6*act;
+      const cr=Math.round(159+73*act),cg=Math.round(208-30*act),cb=Math.round(138-80*act);
+      g3.fillStyle='rgba('+cr+','+cg+','+cb+','+(0.18+0.8*act).toFixed(2)+')';
+      g3.beginPath();g3.arc(sx,sy,rad,0,7);g3.fill();
+      if(act>0.8){g3.strokeStyle='rgba(232,178,58,0.55)';g3.lineWidth=1.5;
+        g3.beginPath();g3.arc(sx,sy,rad+3.5,0,7);g3.stroke();}
+    }
+  }
+  g3.fillStyle='#8a8a8a';g3.font='11px monospace';
+  g3.fillText('fly brain · '+SOMA.n.toLocaleString()+' neurons at their soma positions',12,18);
+  g3.fillText(SOMA.n.toLocaleString()+' somata · 拖拽旋转 · 滚轮缩放',12,c3.height-10);
+}
+
 // ---------- 主循环 ----------
 let last=0,acc=0;
 function frame(ts){
@@ -707,9 +841,13 @@ function frame(ts){
     for(const fp of [state.p1,state.p2]){
       if(fp.role==='fly')drawFlySprite(fp);else drawHumanSprite(fp,fp.role==='bot');}
     drawHud();renderBrain();}
+  drawSoma3D();
   renderTelemetry();
 }
 requestAnimationFrame(t=>{last=t;requestAnimationFrame(frame);});
+initSoma();
+if(window.FLY_SOMA)log('全脑胞体点云已加载：'+FLY_SOMA.provenance.neurons_with_soma.toLocaleString()+
+  ' 个实测 soma，'+FLY_SOMA.provenance.sim_neurons_mapped+'/94 个仿真神经元可发光','ev-learn');
 log(window.FLY_BRAIN?
   '系统就绪：真实连接组数据已加载 ('+FLY_BRAIN.provenance.total_edges_scanned.toLocaleString()+' 条全脑边中筛出子图)。'
   :'警告：未找到 brain-data.js，请先运行 tools/extract_brain.py','ev-learn');
