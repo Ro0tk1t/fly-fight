@@ -1,0 +1,794 @@
+'use strict';
+// ============================================================
+//  FLY-FIGHT v0.3 — 真实连接组驱动 + 跳跃 + 全脑 3D 面板
+// ============================================================
+const W=920,H=440,GROUND=392,MARGIN=46,TICK=1000/60;
+const gcv=document.getElementById('game'),g=gcv.getContext('2d');
+const bcv=document.getElementById('brain'),b=bcv.getContext('2d');
+const logEl=document.getElementById('log');
+
+const clamp=(v,a,bd)=>v<a?a:v>bd?bd:v;
+const rand=(a,bd)=>a+Math.random()*(bd-a);
+const sigmoid=x=>1/(1+Math.exp(-x));
+
+function log(msg,cls){
+  const d=document.createElement('div');
+  if(cls)d.className=cls;
+  d.textContent='['+String(state.tick).padStart(6,'0')+'] '+msg;
+  logEl.appendChild(d);
+  while(logEl.children.length>150)logEl.removeChild(logEl.firstChild);
+  logEl.scrollTop=logEl.scrollHeight;
+}
+
+// ---------- 键盘 ----------
+const keys={},pressed={};
+addEventListener('keydown',e=>{
+  const k=e.key.toLowerCase();
+  if(['arrowleft','arrowright','arrowup','arrowdown',' '].includes(k))e.preventDefault();
+  if(!keys[k])pressed[k]=true;
+  keys[k]=true;
+  if(k==='enter')onEnter();
+});
+addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false;});
+function consume(k){const v=pressed[k];pressed[k]=false;return v;}
+
+// ---------- 分享 ----------
+const SHARE_URL='https://fly-fight-i5p1cjup8mn.qoder.zone/';
+document.getElementById('sharebtn').addEventListener('click',async()=>{
+  if(navigator.share){
+    try{await navigator.share({title:'FLY-FIGHT 果蝇连接组格斗',
+      text:'真实果蝇连接组驱动的格斗竞技场',url:SHARE_URL});return;}
+    catch(e){if(e&&e.name==='AbortError')return;}
+  }
+  try{await navigator.clipboard.writeText(SHARE_URL);
+    log('分享链接已复制到剪贴板：'+SHARE_URL,'ev-learn');}
+  catch(_){log('分享链接（请手动复制）：'+SHARE_URL,'ev-learn');}
+});
+
+// ============================================================
+//  ConnectomeFly — 真实连接组子图整图逐步传播 + 多巴胺门控可塑性
+// ============================================================
+class ConnectomeFly{
+  constructor(oppType){
+    if(!window.FLY_BRAIN)throw new Error('FLY_BRAIN 未加载');
+    this.oppType=oppType;
+    this.key='fly_fight_brain_v2_'+oppType;
+    this.oldKey='doomfly_fight_brain_v2_'+oppType; // v0.2 之前的记忆键，加载后迁移
+    const B=FLY_BRAIN;
+    this.nodes=B.nodes.map(n=>({...n,a:0,base:0.5,sd:0.2}));
+    const idx={}; this.nodes.forEach((n,i)=>idx[n.id]=i);
+    this.edges=B.edges.map(e=>({pre:idx[e.pre],post:idx[e.post],w0:e.w,w:e.w,tr:0}));
+    this.plastic=this.edges.map(()=>false);
+    // 可塑集：真实突触中指向 MBON11(格挡读出) 与运动读出神经元的边
+    const mb11=new Set(this.nodes.filter(n=>n.name==='MBON11').map(n=>idx[n.id]));
+    const motIdx=new Set(this.nodes.filter(n=>n.role==='motor').map(n=>idx[n.id]));
+    this.edges.forEach((e,i)=>{
+      if(mb11.has(e.post)||motIdx.has(e.post))this.plastic[i]=true;
+    });
+    // 读出神经元索引
+    this.ro={};
+    for(const n of this.nodes){
+      if(n.role==='motor'||n.name==='MBON11'||n.name==='PPL101'){
+        (this.ro[n.name]=this.ro[n.name]||[]).push(idx[n.id]);
+      }
+    }
+    this.sensoryIdx=this.nodes.map((n,i)=>n.role==='sensory'?i:-1).filter(i=>i>=0);
+    // 推断反射弧（面板虚线显示，不可塑）：感光→运动读出，保证基础行为可靠，
+    // 真实连接组活动在其上作为调制层叠加
+    const s=this.sensoryIdx;
+    const findIdx=(name,side)=>this.nodes.map((n,i)=>({n,i}))
+      .filter(o=>o.n.name===name&&(!side||o.n.side===side)).map(o=>o.i);
+    const inf=(pre,name,side,w)=>{for(const p of findIdx(name,side))
+      this.edges.push({pre,post:p,w0:w,w:w,tr:0,inf:true});};
+    inf(s[0],'DNp20','R',1.1); inf(s[1],'DNp20','L',1.1);   // 敌在视野→朝其转向
+    inf(s[2],'DNpe017',null,0.9);                            // 接近→攻击
+    inf(s[6],'MBON11',null,1.0);                             // 近距敌攻击→格挡
+    inf(s[6],'Ti flexor MN',null,0.5); inf(s[6],'Tr flexor MN',null,0.5); // 威胁→跳跃闪避
+    this.dopaLevel=0;
+    this.stats={rounds:0,hits:0,rewards:0,pulses:0,born:Date.now()};
+    this.loaded=false;
+    this.load();
+    this.plasticIdx=this.edges.map((e,i)=>i).filter(i=>this.plastic[i]);
+  }
+  load(){
+    let raw=null;try{raw=localStorage.getItem(this.key);}catch(_){}
+    if(!raw){try{ // 迁移旧项目名下的持久记忆
+      raw=localStorage.getItem(this.oldKey);
+      if(raw){localStorage.setItem(this.key,raw);localStorage.removeItem(this.oldKey);}
+    }catch(_){}}
+    if(raw){try{
+      const d=JSON.parse(raw);
+      for(const k in d.w){const i=+k;if(this.edges[i])this.edges[i].w=d.w[k];}
+      this.stats=d.stats||this.stats;this.loaded=true;return;
+    }catch(_){}}
+  }
+  save(){
+    try{
+      const w={};
+      for(const i of this.plasticIdx)
+        if(Math.abs(this.edges[i].w-this.edges[i].w0)>0.02)w[i]=this.edges[i].w;
+      localStorage.setItem(this.key,JSON.stringify({w,stats:this.stats}));
+    }catch(_){}
+  }
+  reset(){for(const i of this.plasticIdx)this.edges[i].w=this.edges[i].w0;
+    this.stats={rounds:0,hits:0,rewards:0,pulses:0,born:Date.now()};this.save();}
+  roundStarted(){this.stats.rounds++;this.save();}
+
+  // 竞技场帧 → 感光神经元驱动（推断代理，与 doomfly R1-R8 映射同性质）
+  drive(f,opp,tick){
+    const dx=opp.x-f.x,ad=clamp(1-Math.abs(dx)/W*1.6,0,1);
+    const d=[
+      clamp(0.5+(dx>0?0.35:-0.35)+ad*0.2,0,1),   // R1-R6 右视野亮度
+      clamp(0.5+(dx>0?-0.35:0.35)+ad*0.2,0,1),   // R1-R6 左视野亮度
+      clamp(0.35+ad*0.6,0,1),                     // R1-R6 接近度
+      clamp(0.3+0.4*Math.sin(tick*0.07)**2,0,1),  // R1-R6 闪烁
+      opp.attacking?0.95:0.15,                    // R7y 色通道(敌攻击)
+      f.flash>0?0.9:0.1,                          // R7y 色通道(自身受击)
+      opp.attacking&&ad>0.5?0.9:0.15,             // R8y 近距色通道
+      (f.hp<40||f.y>0)?0.7:0.15                   // R8y 状态色通道
+    ];
+    this.sensoryIdx.forEach((ni,i)=>{this.nodes[ni].a=d[i];});
+  }
+  think(f,opp,tick){
+    this.drive(f,opp,tick);
+    const N=this.nodes;
+    // PPL101 多巴胺：受击后置 1，指数衰减
+    this.dopaLevel*=0.88;
+    for(const i of (this.ro.PPL101||[]))N[i].a=clamp(this.dopaLevel,0,1);
+    // 整图 Jacobi 更新（用上一时刻激活，循环连接天然保留）
+    const sum=new Float32Array(N.length),cnt=new Float32Array(N.length);
+    for(const e of this.edges){sum[e.post]+=e.w*N[e.pre].a;cnt[e.post]++;}
+    for(let i=0;i<N.length;i++){
+      const n=N[i];
+      if(n.role==='sensory')continue;
+      if(n.role==='dopa'){n.a=clamp(this.dopaLevel,0,1);continue;}
+      const inp=cnt[i]?sum[i]/Math.sqrt(cnt[i]):0;
+      const act=sigmoid(inp*0.85+(Math.sin(tick*0.05+i)*0.04));  // 微噪声=探索
+      n.a=n.a*0.55+act*0.45;                                     // 泄漏积分
+      n.base=n.base*0.9995+n.a*0.0005;                           // 基线校准 EMA（慢，保留持续驱动）
+      n.sd=n.sd*0.9995+Math.abs(n.a-n.base)*0.0005;
+    }
+    // 资格迹
+    for(const e of this.edges)e.tr=e.tr*0.93+N[e.pre].a*N[e.post].a*0.07;
+    // --- 固定读出接口（真实神经元激活经 sigmoid 归一）---
+    const z=i=>clamp((N[i].a-N[i].base)/(N[i].sd+0.02),-3,3);
+    const sz=i=>sigmoid(z(i));
+    const mean=arr=>arr.reduce((s,i)=>s+sz(i),0)/Math.max(1,arr.length);
+    const turn=(this.ro.DNp20&&this.ro.DNp20.length===2)?
+      sz(this.ro.DNp20.find(i=>N[i].side==='R')??this.ro.DNp20[0])-
+      sz(this.ro.DNp20.find(i=>N[i].side==='L')??this.ro.DNp20[1]):0;
+    const fire=this.ro.DNpe017?mean(this.ro.DNpe017):0;
+    const block=this.ro.MBON11?mean(this.ro.MBON11):0;
+    const legs=(this.ro['Ti flexor MN']||[]).concat(this.ro['Tr flexor MN']||[]);
+    const jump=legs.length?mean(legs):0;
+    const act={left:false,right:false,attack:false,block:false,jump:false};
+    const turnG=turn*12;  // 运动增益（工程接口参数）
+    if(turnG>0.25)act.right=true;else if(turnG<-0.25)act.left=true;
+    if(fire>0.56)act.attack=true;
+    if(block>0.58&&block>fire)act.block=true;
+    if(jump>0.57)act.jump=true;
+    if(act.block&&act.attack)act.attack=false;
+    this.readout={turn,fire,block,jump};
+    this.chosen=act.attack?2:act.block?3:act.jump?4:act.right?1:act.left?0:-1;
+    return act;
+  }
+  // --- 厌恶脉冲：多巴胺门控塑形真实突触 ---
+  punish(){
+    this.stats.pulses++;this.stats.hits++;this.dopaLevel=1;
+    const lr=0.10*(0.4+this.dopaLevel);
+    const N=this.nodes;
+    const mb11=new Set(this.ro.MBON11||[]);
+    const badMot=this.chosen===2?this.ro.DNpe017||[]:
+      this.chosen===4?(this.ro['Ti flexor MN']||[]).concat(this.ro['Tr flexor MN']||[]):
+      this.ro.DNp20||[];
+    for(const i of this.plasticIdx){
+      const e=this.edges[i];
+      if(Math.abs(e.tr)<0.02)continue;
+      if(mb11.has(e.post)&&this.chosen!==3)
+        e.w=clamp(e.w+lr*e.tr*10,-2.5,2.5);          // 强化 MBON11(格挡)通路
+      if(badMot.includes(e.post))
+        e.w=clamp(e.w-lr*Math.abs(e.tr)*10,-2.5,2.5); // 抑制导致挨打的动作通路
+    }
+    this.save();
+    log('PPL101 厌恶脉冲 #'+this.stats.pulses+' → 塑形 '+this.plasticIdx.length+' 条真实突触(抑制动作'+this.chosen+')','ev-dopa');
+  }
+  reward(){
+    this.stats.rewards++;
+    const DN=this.ro.DNpe017||[];
+    for(const i of this.plasticIdx){
+      const e=this.edges[i];
+      if(DN.includes(e.post)&&e.tr>0.02)
+        e.w=clamp(e.w+0.05*e.tr*8,-2.5,2.5);
+    }
+    this.save();
+  }
+  shapedCount(){
+    let n=0;for(const i of this.plasticIdx)if(Math.abs(this.edges[i].w-this.edges[i].w0)>0.02)n++;
+    return n;
+  }
+  topChanges(k){
+    const arr=this.plasticIdx.map(i=>{
+      const e=this.edges[i];return{i,d:e.w-e.w0};
+    }).filter(x=>Math.abs(x.d)>0.02).sort((a,bd)=>Math.abs(bd.d)-Math.abs(a.d)).slice(0,k);
+    return arr.map(x=>{
+      const e=this.edges[x.i];
+      return{label:this.nodes[e.pre].name+'→'+this.nodes[e.post].name,d:x.d};
+    });
+  }
+}
+
+// ============================================================
+//  战斗单位（含跳跃物理）
+// ============================================================
+const ATK_STARTUP=9,ATK_ACTIVE=7,ATK_RECOVER=16,ATK_RANGE=68,
+      ATK_DMG=9,CHIP_DMG=1,HITSTUN=20,KB=4.6,SPD=3.4,
+      JUMP_V=13.2,GRAV=0.62;
+
+class Fighter{
+  constructor(name,role,x){
+    this.name=name;this.role=role;this.spawnX=x;this.wins=0;this.reset();
+  }
+  reset(){
+    this.x=this.spawnX;this.hp=100;this.vx=0;this.atk=0;this.cd=0;
+    this.blocking=false;this.hitstun=0;this.flash=0;this.facing=1;this.t=0;this.hasHit=false;
+    this.y=0;this.vy=0;this.moving=false;this.walkT=0;
+  }
+  get attacking(){return this.atk>0;}
+  get grounded(){return this.y<=0;}
+  update(opp){
+    this.t++;
+    if(this.cd>0)this.cd--;
+    if(this.flash>0)this.flash--;
+    this.facing=opp.x>=this.x?1:-1;
+    if(this.hitstun>0){this.hitstun--;this.x+=this.vx;this.vx*=0.82;}
+    if(this.y>0||this.vy>0){
+      this.y+=this.vy;this.vy-=GRAV;
+      if(this.y<=0){this.y=0;this.vy=0;}
+    }
+    this.x=clamp(this.x,MARGIN,W-MARGIN);
+  }
+  act(a,opp){
+    const stunned=this.hitstun>0||state.phase!=='fight';
+    a=a||{};
+    this.blocking=!stunned&&!!a.block&&this.atk===0&&this.grounded;
+    if(!stunned&&a.jump&&this.grounded&&this.atk===0){this.vy=JUMP_V;this.y=0.01;this.blocking=false;}
+    if(this.atk>0){
+      this.atk++;
+      if(this.atk===ATK_STARTUP+1)this.hitCheck(opp);
+      if(this.atk>ATK_STARTUP+ATK_ACTIVE+ATK_RECOVER){this.atk=0;this.hasHit=false;this.cd=22;}
+    }else if(!stunned&&a.attack&&!this.blocking&&this.cd<=0){
+      this.atk=1;this.hasHit=false;
+    }
+    this.moving=false;
+    if(!this.blocking&&this.atk===0&&!stunned){
+      const air=this.grounded?1:0.85;
+      if(a.left)this.x-=SPD*air;
+      if(a.right)this.x+=SPD*air;
+      this.moving=this.grounded&&!!(a.left!==a.right);
+      if(this.moving)this.walkT++;
+    }
+    this.x=clamp(this.x,MARGIN,W-MARGIN);
+  }
+  hitCheck(opp){
+    const d=(opp.x-this.x)*this.facing;
+    if(d>0&&d<ATK_RANGE&&Math.abs(opp.y-this.y)<45&&!this.hasHit){
+      this.hasHit=true;
+      if(opp.blocking){
+        opp.hp=Math.max(0,opp.hp-CHIP_DMG);
+        opp.vx=this.facing*KB*0.4;
+        state.events.push({type:'chip',f:opp,by:this});
+      }else{
+        opp.hp=Math.max(0,opp.hp-ATK_DMG);
+        opp.hitstun=HITSTUN;opp.vx=this.facing*KB;opp.flash=14;
+        state.events.push({type:'hit',f:opp,by:this});
+      }
+    }
+  }
+}
+
+// ---------- 控制器 ----------
+class HumanCtrl{
+  constructor(map){this.map=map;} // 每个动作可为单键或键数组
+  _any(a){return Array.isArray(a)?a.some(k=>keys[k]):!!keys[a];}
+  _hit(a){const ks=Array.isArray(a)?a:[a];const v=ks.some(k=>consume(k));ks.forEach(k=>pressed[k]=false);return v;}
+  get(){const m=this.map;
+    return{left:this._any(m.left),right:this._any(m.right),attack:this._hit(m.attack),
+      block:this._any(m.block),jump:this._hit(m.jump)};}
+}
+// 单人模式下玩家可任选一套键位
+const MAP1={left:['a','arrowleft'],right:['d','arrowright'],attack:['j','.'],block:['k',','],jump:[' ','arrowup']};
+const MAP_P1={left:'a',right:'d',attack:'j',block:'k',jump:' '};
+const MAP_P2={left:'arrowleft',right:'arrowright',attack:'.',block:',',jump:'arrowup'};
+class BotCtrl{
+  constructor(){this.blockT=0;this.retreatT=0;this.pauseT=0;}
+  get(f,opp){
+    const ad=Math.abs(opp.x-f.x);
+    const a={left:false,right:false,attack:false,block:false,jump:false};
+    if(this.blockT>0){this.blockT--;a.block=true;return a;}
+    if(this.retreatT>0){this.retreatT--;a[f.facing>0?'left':'right']=true;return a;}
+    if(opp.attacking&&ad<ATK_RANGE+40){
+      if(Math.random()<0.02)a.jump=true;
+      else if(Math.random()<0.05){this.blockT=18;return a;}
+    }
+    if(f.hp<32&&Math.random()<0.005){this.retreatT=34;return a;}
+    if(this.pauseT>0){this.pauseT--;return a;}
+    if(ad>ATK_RANGE-14){a.right=f.facing>0;a.left=f.facing<0;}
+    else{
+      if(f.cd<=0&&Math.random()<0.045){a.attack=true;this.pauseT=14;}
+      else if(Math.random()<0.012){this.retreatT=16;}
+    }
+    return a;
+  }
+}
+class FlyCtrl{
+  constructor(fly){this.fly=fly;}
+  get(f,opp){return this.fly.think(f,opp,state.tick);}
+}
+
+// ============================================================
+//  比赛流程
+// ============================================================
+const MODES={
+  flyvbot:{label:'果蝇 vs 电脑',p1:'fly',p2:'bot',opp:'bot'},
+  flyvhuman:{label:'果蝇 vs 玩家',p1:'fly',p2:'human',opp:'human'},
+  humvbot:{label:'玩家 vs 电脑',p1:'human',p2:'bot',opp:'bot'}
+};
+const brains={};
+const state={mode:null,screen:'menu',phase:'ready',phaseT:0,round:1,tick:0,
+  p1:null,p2:null,events:[],fly:null,ctrl1:null,ctrl2:null,winnerText:''};
+
+function getBrain(opp){
+  if(!brains[opp]){
+    brains[opp]=new ConnectomeFly(opp);
+    log('真实连接组已接入：'+brains[opp].nodes.length+' 神经元 / '+brains[opp].edges.length+' 突触 · '+
+      (brains[opp].loaded?'恢复持久记忆':'首次上场，突触权重=真实数据'),'ev-learn');
+  }
+  return brains[opp];
+}
+function startMode(id){
+  const M=MODES[id];
+  const wantFly=M.p1==='fly'||M.p2==='fly';
+  if(wantFly&&!window.FLY_BRAIN){
+    log('错误：brain-data.js 未加载 — 请先运行 python3 tools/extract_brain.py','ev-hit');return;
+  }
+  state.mode=id;state.screen='match';state.round=1;
+  const fn=(r)=>r==='fly'?'FRUIT-FLY':r==='bot'?'SCRIPT-BOT':'HUMAN';
+  state.p1=new Fighter(fn(M.p1),M.p1,W*0.28);
+  state.p2=new Fighter(fn(M.p2),M.p2,W*0.72);
+  state.fly=wantFly?getBrain(M.opp):null;
+  if(state.fly)state.fly.roundStarted();
+  const soloHuman=(M.p1==='human')!==(M.p2==='human'); // 只有一个玩家时两套键位通用
+  state.ctrl1=M.p1==='fly'?new FlyCtrl(state.fly):M.p1==='bot'?new BotCtrl():new HumanCtrl(soloHuman?MAP1:MAP_P1);
+  state.ctrl2=M.p2==='fly'?new FlyCtrl(state.fly):M.p2==='bot'?new BotCtrl():new HumanCtrl(soloHuman?MAP1:MAP_P2);
+  document.querySelectorAll('#modes button[data-mode]').forEach(el=>el.classList.toggle('active',el.dataset.mode===id));
+  resetRound();
+  log('=== 开始：'+M.label+' · 三局两胜 ===','ev-win');
+}
+function resetRound(){
+  state.p1.reset();state.p2.reset();state.phase='ready';state.phaseT=80;state.events.length=0;
+}
+function onEnter(){
+  if(state.screen==='menu'){startMode('flyvbot');return;}
+  if(state.phase==='over'){state.screen='menu';state.fly=null;
+    document.querySelectorAll('#modes button[data-mode]').forEach(el=>el.classList.remove('active'));}
+}
+document.querySelectorAll('#modes button[data-mode]').forEach(el=>el.addEventListener('click',e=>{
+  e.currentTarget.blur();  // 防止空格/回车再次触发按钮
+  startMode(el.dataset.mode);
+}));
+document.getElementById('btnReset').addEventListener('click',()=>{
+  for(const k in brains)brains[k].reset();
+  try{for(const t of ['bot','human'])for(const k of ['fly_fight_brain_v2_','doomfly_fight_brain_v2_'])localStorage.removeItem(k+t);}catch(_){}
+  log('神经记忆已清除：突触权重恢复为真实连接组原始值','ev-learn');
+});
+
+// ---------- 主循环 ----------
+function tickGame(){
+  state.tick++;
+  if(state.screen!=='match')return;
+  const{p1,p2}=state;
+  if(state.phase==='ready'){if(--state.phaseT<=0)state.phase='fight';return;}
+  if(state.phase==='ko'){
+    p1.update(p2);p2.update(p1);
+    if(--state.phaseT<=0){
+      const w=p1.hp>0?p1:p2;
+      if(w.wins>=2){state.phase='over';state.winnerText=w.name+' 赢得比赛';
+        log('=== 比赛结束：'+state.winnerText+'（果蝇记忆已持久保存）===','ev-win');}
+      else{state.round++;resetRound();}
+    }
+    return;
+  }
+  if(state.phase==='over')return;
+  const a1=state.ctrl1.get(p1,p2),a2=state.ctrl2.get(p2,p1);
+  p1.act(a1,p2);p2.act(a2,p1);
+  const gap=p2.x-p1.x;
+  if(Math.abs(gap)<34&&Math.abs(p2.y-p1.y)<40){
+    const push=(34-Math.abs(gap))/2*(gap>=0?1:-1);
+    p1.x=clamp(p1.x-push,MARGIN,W-MARGIN);p2.x=clamp(p2.x+push,MARGIN,W-MARGIN);}
+  p1.update(p2);p2.update(p1);
+  for(const ev of state.events){
+    if(ev.type==='hit'){
+      if(ev.f.role==='fly'&&state.fly)state.fly.punish();
+      else log(ev.f.name+' 被击中 -'+ATK_DMG,'ev-hit');
+      if(ev.by.role==='fly'&&state.fly)state.fly.reward();
+    }
+  }
+  state.events.length=0;
+  if(p1.hp<=0||p2.hp<=0){
+    const w=p1.hp>0?p1:p2;w.wins++;
+    state.phase='ko';state.phaseT=150;state.winnerText=w.name+' K.O.';
+    log('K.O. — '+state.winnerText+' 比分 '+p1.wins+':'+p2.wins,'ev-win');
+  }
+}
+
+// ============================================================
+//  渲染 — 竞技场
+// ============================================================
+function drawArena(){
+  const grd=g.createLinearGradient(0,0,0,H);
+  grd.addColorStop(0,'#101014');grd.addColorStop(1,'#07070a');
+  g.fillStyle=grd;g.fillRect(0,0,W,H);
+  g.strokeStyle='#26262c';g.lineWidth=1;
+  g.beginPath();g.moveTo(0,GROUND);g.lineTo(W,GROUND);g.stroke();
+  g.fillStyle='#1b1b20';
+  for(let x=MARGIN;x<=W-MARGIN;x+=40){g.fillRect(x,GROUND+6,1,6);
+    if((x-MARGIN)%160===0){g.fillStyle='#33333a';g.font='8px monospace';g.fillText(String(x),x-8,GROUND+24);g.fillStyle='#1b1b20';}}
+  g.fillStyle='#1e1e24';
+  for(let y=120;y<GROUND;y+=26){g.fillRect(MARGIN-14,y,8,14);g.fillRect(W-MARGIN+6,y,8,14);}
+}
+function drawFlySprite(f){
+  const x=f.x,y=GROUND-30-f.y,fc=f.facing,t=f.t;
+  const lunge=f.atk>ATK_STARTUP?fc*10:0;
+  // 影子
+  g.fillStyle='rgba(0,0,0,0.5)';
+  g.beginPath();g.ellipse(x,GROUND+2,18-f.y*0.08,4,0,0,Math.PI*2);g.fill();
+  g.save();g.translate(x+lunge,y);
+  const flap=Math.sin(t*0.9)*0.5+0.5;
+  g.fillStyle='rgba(220,225,235,'+(0.18+flap*0.22)+')';
+  g.beginPath();g.ellipse(-6,-16,16,6,-0.5+flap*0.4,0,Math.PI*2);g.fill();
+  g.beginPath();g.ellipse(-2,-18,14,5,-0.2+flap*0.3,0,Math.PI*2);g.fill();
+  g.fillStyle=f.flash>0?'#ffffff':'#8a8a92';
+  g.beginPath();g.ellipse(-4,0,17,11,0,0,Math.PI*2);g.fill();
+  g.strokeStyle='#55555c';g.lineWidth=2;
+  g.beginPath();g.moveTo(-10,-6);g.lineTo(-14,6);g.moveTo(-2,-8);g.lineTo(-4,8);g.stroke();
+  g.strokeStyle='#6f6f78';g.lineWidth=1.5;
+  const tuck=f.grounded?0:-4;
+  for(let i=-1;i<2;i++){g.beginPath();g.moveTo(i*6,8);g.lineTo(i*8+fc*4,18+tuck);g.stroke();}
+  g.fillStyle=f.flash>0?'#fff':'#7d7d86';
+  g.beginPath();g.arc(fc*16,-2,9,0,Math.PI*2);g.fill();
+  g.fillStyle='#c0392b';
+  g.beginPath();g.arc(fc*19,-4,4.2,0,Math.PI*2);g.fill();
+  g.beginPath();g.arc(fc*15,-6,3.4,0,Math.PI*2);g.fill();
+  if(f.blocking){g.strokeStyle='rgba(230,230,240,0.8)';g.lineWidth=2;
+    const a0=fc>0?-1.1:Math.PI-1.1;   // 弧永远朝面朝方向外凸，避免面向左时嵌进身体
+    g.beginPath();g.arc(fc*22,0,16,a0,a0+2.2);g.stroke();}
+  if(f.atk>ATK_STARTUP&&f.atk<=ATK_STARTUP+ATK_ACTIVE){
+    g.strokeStyle='#fff';g.lineWidth=3;
+    g.beginPath();g.moveTo(fc*24,-2);g.lineTo(fc*ATK_RANGE*0.8,-4);g.stroke();}
+  g.restore();
+  tagLabel(f,x,y-44+f.y*0);
+}
+function drawHumanSprite(f,bot){
+  const x=f.x,fc=f.facing,feet=GROUND-f.y;
+  const body=bot?'#8fb6d8':'#d8d8d8',dim=bot?'#4d6a80':'#7a7a7a';
+  g.fillStyle='rgba(0,0,0,0.5)';
+  g.beginPath();g.ellipse(x,GROUND+2,14-f.y*0.08,4,0,0,Math.PI*2);g.fill();
+  g.save();g.translate(x,0);
+  const lunge=f.atk>ATK_STARTUP?fc*8:0;
+  g.translate(lunge,0);
+  g.strokeStyle=f.flash>0?'#fff':body;g.lineWidth=5;g.lineCap='round';
+  const hip=feet-38;
+  g.beginPath();
+  if(!f.grounded){                                      // 空中：收腿/摆腿
+    const rise=f.vy>0;
+    g.moveTo(0,hip);g.lineTo(fc*7,hip+11);g.lineTo(fc*(rise?4:11),hip+(rise?18:24));
+    g.moveTo(0,hip);g.lineTo(-fc*4,hip+13);g.lineTo(-fc*10,hip+22);
+  }else if(f.moving){                                   // 行走：双腿交替摆动
+    const sw=Math.sin(f.walkT*0.32);
+    g.moveTo(0,hip);g.lineTo(fc*sw*5,hip+10);g.lineTo(fc*sw*11,feet-Math.max(0,sw)*5);
+    g.moveTo(0,hip);g.lineTo(-fc*sw*5,hip+10);g.lineTo(-fc*sw*11,feet-Math.max(0,-sw)*5);
+  }else{                                                // 站立
+    g.moveTo(0,hip);g.lineTo(-8,feet);g.moveTo(0,hip);g.lineTo(9,feet);
+  }
+  g.stroke();
+  g.beginPath();g.moveTo(0,feet-38);g.lineTo(0,feet-66);g.stroke();
+  g.fillStyle=f.flash>0?'#fff':body;
+  g.beginPath();g.arc(fc*2,feet-76,9,0,Math.PI*2);g.fill();
+  if(bot){g.fillStyle=dim;g.fillRect(fc*2-5,feet-80,10,3);}
+  if(f.blocking){
+    g.strokeStyle=dim;g.beginPath();g.moveTo(0,feet-60);g.lineTo(fc*14,feet-68);g.lineTo(fc*14,feet-46);g.stroke();
+    g.strokeStyle='#e6e6f0';g.lineWidth=3;g.beginPath();g.moveTo(fc*17,feet-74);g.lineTo(fc*17,feet-40);g.stroke();
+  }else if(f.atk>ATK_STARTUP&&f.atk<=ATK_STARTUP+ATK_ACTIVE){
+    g.strokeStyle='#fff';g.lineWidth=5;
+    g.beginPath();g.moveTo(0,feet-58);g.lineTo(fc*ATK_RANGE*0.75,feet-56);g.stroke();
+  }else{
+    g.strokeStyle=dim;g.lineWidth=4;
+    g.beginPath();g.moveTo(0,feet-60);g.lineTo(fc*12,feet-50);g.moveTo(0,feet-60);g.lineTo(-fc*10,feet-48);g.stroke();
+  }
+  g.restore();
+  tagLabel(f,x,feet-96);
+}
+function tagLabel(f,x,y){
+  g.font='9px monospace';g.textAlign='center';
+  g.fillStyle=f.role==='fly'?'#9fd08a':f.role==='bot'?'#8fb6d8':'#e6e6e6';
+  g.fillText(f.name,x,y);
+  g.fillStyle='#66666e';
+  g.fillText(f.role==='fly'?'CONNECTOME-AGENT':f.role==='bot'?'SCRIPT-BOT v1':'HUMAN',x,y+10);
+  g.textAlign='left';
+}
+function drawHud(){
+  const{p1,p2}=state,bw=330;
+  bar(24,20,bw,p1.hp,false);bar(W-24-bw,20,bw,p2.hp,true);
+  g.font='11px monospace';g.fillStyle='#aaa';
+  g.fillText(p1.name,24,48);g.textAlign='right';g.fillText(p2.name,W-24,48);g.textAlign='left';
+  pips(24,56,p1.wins);pips(W-24-40,56,p2.wins);
+  g.textAlign='center';
+  if(state.phase==='ready'){big(state.phaseT>30?'ROUND '+state.round:'FIGHT!');}
+  else if(state.phase==='ko'){big('K.O.');g.font='12px monospace';g.fillStyle='#999';
+    g.fillText(state.winnerText+' 比分 '+p1.wins+':'+p2.wins,W/2,H/2+42);}
+  else if(state.phase==='over'){big(state.winnerText);
+    g.font='12px monospace';g.fillStyle='#9fd08a';
+    g.fillText('果蝇神经记忆已持久化 — 按 Enter 返回模式选择',W/2,H/2+42);}
+  g.textAlign='left';
+  g.font='10px monospace';g.fillStyle='#4a4a52';
+  g.fillText(MODES[state.mode].label+' · frame '+state.tick+' · arena combat_survival_1v1.acs',24,H-14);
+}
+function bar(x,y,w,hp,flip){
+  g.fillStyle='#1c1c22';g.fillRect(x,y,w,12);
+  const fw=(w-4)*hp/100;
+  g.fillStyle=hp>30?'#e6e6e6':'#d86a6a';
+  g.fillRect(flip?x+2+(w-4)-fw:x+2,y+2,fw,8);
+  g.strokeStyle='#33333a';g.strokeRect(x+0.5,y+0.5,w-1,12);
+}
+function pips(x,y,n){for(let i=0;i<2;i++){g.fillStyle=i<n?'#e6e6e6':'#2a2a30';
+  g.beginPath();g.arc(x+6+i*20,y+6,5,0,Math.PI*2);g.fill();}}
+function big(t){g.font='700 34px monospace';g.fillStyle='#e6e6e6';g.fillText(t,W/2,H/2);}
+
+function drawMenu(){
+  drawArena();
+  g.textAlign='center';
+  g.font='700 30px monospace';g.fillStyle='#e6e6e6';
+  g.fillText('FLY-FIGHT',W/2,150);
+  g.font='13px monospace';g.fillStyle='#8a8a92';
+  const info=window.FLY_BRAIN?
+    '果蝇 = 真实连接组子图 ('+FLY_BRAIN.nodes.length+' 神经元 / '+FLY_BRAIN.edges.length+' 突触, MaleCNS)':
+    '警告: brain-data.js 未加载';
+  g.fillText(info,W/2,178);
+  g.fillStyle='#555';g.font='11px monospace';
+  g.fillText('选择上方模式开始，或按 Enter 快速开始「果蝇 vs 电脑」',W/2,210);
+  const fx=W/2+Math.sin(state.tick*0.02)*180,fy=280+Math.sin(state.tick*0.13)*14;
+  g.save();g.translate(fx,fy);
+  const flap=Math.sin(state.tick*0.9)*0.5+0.5;
+  g.fillStyle='rgba(220,225,235,'+(0.2+flap*0.2)+')';
+  g.beginPath();g.ellipse(-6,-14,15,6,-0.5+flap*0.4,0,Math.PI*2);g.fill();
+  g.fillStyle='#8a8a92';g.beginPath();g.ellipse(0,0,16,10,0,0,Math.PI*2);g.fill();
+  g.beginPath();g.arc(15,-2,8,0,Math.PI*2);g.fill();
+  g.fillStyle='#c0392b';g.beginPath();g.arc(18,-4,4,0,Math.PI*2);g.fill();
+  g.restore();
+  g.textAlign='left';
+}
+
+// ============================================================
+//  渲染 — 真实连接组面板
+// ============================================================
+const NT_COLOR={acetylcholine:'#d8d8e0',glutamate:'#9fd08a',gaba:'#8fb6d8',
+  dopamine:'#e8b23a',serotonin:'#c78fd0',glycine:'#d88f8f',unknown:'#555'};
+const ROLE_COL=['sensory','visual','kc','mbon','command','motor'];
+function renderBrain(){
+  b.fillStyle='#0b0b0d';b.fillRect(0,0,420,440);
+  b.font='10px monospace';b.fillStyle='#8a8a92';
+  b.fillText('真实连接组面板 · 实线=真实突触 虚线=推断反射弧 琥珀=已塑形',10,14);
+  const fly=state.fly;
+  if(!fly){b.fillStyle='#444';b.font='12px monospace';b.textAlign='center';
+    b.fillText('选择含果蝇的模式以接入真实神经数据',210,220);b.textAlign='left';return;}
+  const X={sensory:36,visual:110,kc:185,mbon:255,command:320,motor:390};
+  const groups={};
+  for(const n of fly.nodes)(groups[n.role]=groups[n.role]||[]).push(n);
+  // 布局：主链六层，dopa 放顶部
+  const yTop=40,yBot=370;
+  for(const r of ROLE_COL){
+    const list=groups[r]||[];
+    const x=X[r];
+    list.forEach((n,i)=>{
+      n._x=x;
+      n._y=list.length===1?(yTop+yBot)/2:yTop+i*(yBot-yTop)/(list.length-1);
+    });
+  }
+  (groups.dopa||[]).forEach((n,i)=>{n._x=185+i*50;n._y=26;});
+  // 边
+  for(const e of fly.edges){
+    const a=fly.nodes[e.pre],c=fly.nodes[e.post];
+    const dw=Math.abs(e.w-e.w0);
+    const act=a.a*0.8+0.2;
+    if(e.inf){b.setLineDash([2,3]);b.strokeStyle='rgba(159,208,138,0.4)';b.lineWidth=1;}
+    else{
+      b.setLineDash([]);
+      if(dw>0.02)b.strokeStyle='rgba(232,178,58,'+clamp(0.25+dw/2,0,0.9)+')';
+      else if(e.w>0)b.strokeStyle='rgba(230,230,235,'+clamp(0.04+act*Math.abs(e.w)/4,0,0.3)+')';
+      else b.strokeStyle='rgba(110,130,170,'+clamp(0.04+act*Math.abs(e.w)/4,0,0.3)+')';
+      b.lineWidth=dw>0.02?1.4:0.7;
+    }
+    b.beginPath();b.moveTo(a._x,a._y);b.lineTo(c._x,c._y);b.stroke();
+  }
+  b.setLineDash([]);b.lineWidth=1;
+  // 神经元
+  for(const n of fly.nodes){
+    const r=2.5+n.a*4.5;
+    b.fillStyle=NT_COLOR[n.nt]||'#555';
+    b.globalAlpha=0.25+n.a*0.75;
+    b.beginPath();b.arc(n._x,n._y,r,0,Math.PI*2);b.fill();
+    b.globalAlpha=1;
+    if(n.role==='motor'||n.name==='MBON11'||n.name==='PPL101'){
+      b.fillStyle='#77777f';b.font='8px monospace';
+      b.fillText(n.name+(n.side?'('+n.side+')':''),n._x-16,n._y-7);
+    }
+    if(n.role==='sensory'){b.fillStyle='#55555d';b.font='7px monospace';
+      b.fillText(n.name,n._x-14,n._y-6);}
+  }
+  // 读出接口指示
+  const ro=fly.ro;
+  b.fillStyle='#9fd08a';b.font='9px monospace';
+  const rl=fly.readout||{turn:0,fire:0,block:0,jump:0};
+  b.fillText('读出: DNp20(右−左)→位移 '+rl.turn.toFixed(2),10,396);
+  b.fillText('DNpe017→攻击 '+rl.fire.toFixed(2)+' · MBON11→格挡 '+rl.block.toFixed(2),10,408);
+  b.fillText('腿屈肌MN→跳跃 '+rl.jump.toFixed(2)+' · PPL101 多巴胺 '+fly.dopaLevel.toFixed(2),10,420);
+  // 突触变化 TOP
+  const top=fly.topChanges(3);
+  b.fillStyle='#e8b23a';
+  b.fillText('变化最大突触: '+(top.length?top.map(t=>t.label+' Δ'+(t.d>0?'+':'')+t.d.toFixed(2)).join('  '):'（尚未塑形）'),10,433);
+}
+
+// ---------- 遥测 ----------
+function renderTelemetry(){
+  document.getElementById('tMode').textContent=state.screen==='match'?MODES[state.mode].label:'菜单';
+  document.getElementById('tRound').textContent=state.screen==='match'?state.round:'—';
+  document.getElementById('tGraph').textContent=window.FLY_BRAIN?
+    FLY_BRAIN.nodes.length+'神经元/'+FLY_BRAIN.edges.length+'突触':'缺失!';
+  const fly=state.fly;
+  document.getElementById('tDopa').textContent=fly?fly.stats.pulses:'—';
+  document.getElementById('tHits').textContent=fly?fly.stats.hits:'—';
+  document.getElementById('tRewards').textContent=fly?fly.stats.rewards:'—';
+  document.getElementById('tPlastic').textContent=fly?fly.shapedCount()+'/'+fly.plasticIdx.length:'—';
+  document.getElementById('tGen').textContent=fly?fly.stats.rounds:'—';
+}
+
+// ============================================================
+//  全脑 3D 神经元活动面板 — 实测胞体点云（soma-data.js）
+// ============================================================
+const c3=document.getElementById('brain3d'),g3=c3.getContext('2d');
+const OFF=document.createElement('canvas'),g3o=OFF.getContext('2d');
+let SOMA=null;
+function initSoma(){
+  if(!window.FLY_SOMA)return;
+  const B=FLY_SOMA;
+  const dec=s=>{const bin=atob(s);const u=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return u;};
+  const pos=new Uint16Array(dec(B.positions).buffer);
+  const n=pos.length/3;
+  const x=new Float32Array(n),y=new Float32Array(n),z=new Float32Array(n);
+  let cx=0,cy=0,cz=0;
+  for(let i=0;i<n;i++){
+    x[i]=pos[i*3]*B.scale;      // 原始轴：x=内外侧(ML)
+    y[i]=pos[i*3+2]*B.scale;    // z=前后(AP，向后为正) → 深度
+    z[i]=-pos[i*3+1]*B.scale;   // y=背腹(DV，腹侧为正) → 垂直轴取反，背朝上
+    cx+=x[i];cy+=y[i];cz+=z[i];
+  }
+  cx/=n;cy/=n;cz/=n;
+  let r=1;
+  for(let i=0;i<n;i++){x[i]-=cx;y[i]-=cy;z[i]-=cz;
+    r=Math.max(r,Math.abs(x[i]),Math.abs(y[i]),Math.abs(z[i]));}
+  for(let i=0;i<n;i++){x[i]/=r;y[i]/=r;z[i]/=r;}
+  OFF.width=460;OFF.height=190;
+  SOMA={n,x,y,z,sides:dec(B.sides),core:B.core,meta:B.provenance};
+  const m=SOMA.meta;
+  document.getElementById('somaInfo').innerHTML=
+    '<b>全脑胞体点云</b> · '+m.neurons_with_soma.toLocaleString()+' 个实测 soma（共 '+
+    m.neurons_total.toLocaleString()+' 个神经元），坐标来自 body-annotations.feather 的 somaLocation（nm，'+m.scale_nm+'nm/单位）。<br>'+
+    '口径：211,577 全标注行 → 166,700 神经元全集 → 有胞体坐标 141,781（其中 140,024 Traced）。'+
+    '常引用的 139,662 = 141,781 再剔除 2,119 个无 superclass 标注的，两者同源不矛盾。<br>'+
+    '<span class="l">● 左脑 (L)</span>　<span class="r">● 右脑 (R)</span>　● 中线/未知<br>'+
+    '格斗仿真中的 94 个神经元有 '+m.sim_neurons_mapped+' 个实测胞体，上场时按膜电位激活值实时发光：'+
+    '<span class="a">■ 高激活</span> / <span style="color:var(--fly)">■ 低激活</span>。<br>'+
+    '朝向按真实解剖轴：背朝上、头前腹后 — 脑在上方，腹神经索/躯干胞体向下后方延伸'+
+    '（轴判定依据：感光神经元 x 达 ±44µm 两侧视网膜、下行神经元位于脑后缘、VNC 胞体 z>66µm）。<br>'+
+    '其余 '+(m.neurons_with_soma-m.sim_neurons_mapped).toLocaleString()+' 个为真实位置静态呈现 — 本面板不虚构其活动。';
+}
+const view={yaw:0.7,pitch:0.42,zoom:1,drag:null};
+c3.addEventListener('pointerdown',e=>{view.drag=[e.clientX,e.clientY];
+  c3.setPointerCapture(e.pointerId);});
+c3.addEventListener('pointermove',e=>{if(!view.drag)return;
+  view.yaw+=(e.clientX-view.drag[0])*0.006;
+  view.pitch=clamp(view.pitch+(e.clientY-view.drag[1])*0.005,-1.25,1.25);
+  view.drag=[e.clientX,e.clientY];});
+addEventListener('pointerup',()=>{view.drag=null;});
+c3.addEventListener('wheel',e=>{e.preventDefault();
+  view.zoom=clamp(view.zoom*Math.exp(-e.deltaY*0.0012),0.5,6);},{passive:false});
+
+function proj3(h1,h2,v,WW,HH){
+  const cw=Math.cos(view.yaw),sw=Math.sin(view.yaw);
+  const cp=Math.cos(view.pitch),sp=Math.sin(view.pitch);
+  const a=h1*cw+h2*sw, b0=-h1*sw+h2*cw;
+  const v2=v*cp-b0*sp, b2=v*sp+b0*cp;
+  const s=3/(3+b2)*view.zoom*Math.min(WW,HH)*0.92;
+  return [WW/2+a*s,HH/2-v2*s,s,b2];
+}
+let img3=null,buf3=null,lum3=null,rafN=0;
+function drawSoma3D(){
+  rafN++;
+  if(!SOMA){
+    g3.fillStyle='#0d0d0d';g3.fillRect(0,0,c3.width,c3.height);
+    g3.fillStyle='#555';g3.font='12px monospace';
+    g3.fillText('soma-data.js 未加载 — 请运行 python3 tools/extract_soma.py',40,40);
+    return;
+  }
+  if(rafN%2&&view.drag===null&&state.screen==='match')return; // 对局中降频到 30fps
+  if(view.drag===null)view.yaw+=0.0012;                        // 空闲自转
+  const WW=OFF.width,HH=OFF.height;
+  if(!img3){img3=g3o.createImageData(WW,HH);buf3=new Uint32Array(img3.data.buffer);
+    lum3=new Float32Array(WW*HH);}
+  buf3.fill(0);lum3.fill(0);
+  const {n,x,y,z,sides}=SOMA;
+  const cw=Math.cos(view.yaw),sw=Math.sin(view.yaw);
+  const cp=Math.cos(view.pitch),sp=Math.sin(view.pitch);
+  const ps=Math.min(WW,HH)*0.92,zm=view.zoom;
+  for(let i=0;i<n;i++){
+    const h1=x[i],h2=y[i],v0=z[i];
+    const a=h1*cw+h2*sw, b0=-h1*sw+h2*cw;
+    const v2=v0*cp-b0*sp, b2=v0*sp+b0*cp;
+    const s=3/(3+b2)*zm;
+    const px=(WW/2+a*s*ps)|0, py=(HH/2-v2*s*ps)|0;
+    if(px<0||px>=WW||py<0||py>=HH)continue;
+    const br=0.16+0.6*(1-(b2+1)/2);
+    const side=sides[i];
+    const rr=(side===1?90:side===2?225:170)*br;
+    const gg=(side===1?200:side===2?170:170)*br;
+    const bb=(side===1?190:side===2?95:178)*br;
+    const k=py*WW+px,L=rr+gg+bb;
+    if(L>lum3[k]){lum3[k]=L;
+      buf3[k]=0xff000000|((bb|0)<<16)|((gg|0)<<8)|(rr|0);}
+  }
+  g3o.putImageData(img3,0,0);
+  g3.fillStyle='#0d0d0d';g3.fillRect(0,0,c3.width,c3.height);
+  g3.imageSmoothingEnabled=true;
+  g3.drawImage(OFF,0,0,c3.width,c3.height);
+  // 仿真神经元按激活值发光
+  const fly=state.fly;
+  if(fly){
+    for(let k=0;k<SOMA.core.length;k++){
+      const i=SOMA.core[k];if(i<0)continue;
+      const act=clamp(fly.nodes[k].a,0,1);
+      const [sx,sy]=proj3(SOMA.x[i],SOMA.y[i],SOMA.z[i],c3.width,c3.height);
+      const rad=1.4+4.6*act;
+      const cr=Math.round(159+73*act),cg=Math.round(208-30*act),cb=Math.round(138-80*act);
+      g3.fillStyle='rgba('+cr+','+cg+','+cb+','+(0.18+0.8*act).toFixed(2)+')';
+      g3.beginPath();g3.arc(sx,sy,rad,0,7);g3.fill();
+      if(act>0.8){g3.strokeStyle='rgba(232,178,58,0.55)';g3.lineWidth=1.5;
+        g3.beginPath();g3.arc(sx,sy,rad+3.5,0,7);g3.stroke();}
+    }
+  }
+  g3.fillStyle='#8a8a8a';g3.font='11px monospace';
+  g3.fillText('fly brain · '+SOMA.n.toLocaleString()+' neurons at their soma positions',12,18);
+  g3.fillText(SOMA.n.toLocaleString()+' somata · 拖拽旋转 · 滚轮缩放',12,c3.height-10);
+}
+
+// ---------- 主循环 ----------
+let last=0,acc=0;
+function frame(ts){
+  requestAnimationFrame(frame);
+  const dt=Math.min(120,ts-last);last=ts;acc+=dt;
+  while(acc>=TICK){tickGame();acc-=TICK;}
+  if(state.screen==='menu'){drawMenu();renderBrain();}
+  else{drawArena();
+    for(const fp of [state.p1,state.p2]){
+      if(fp.role==='fly')drawFlySprite(fp);else drawHumanSprite(fp,fp.role==='bot');}
+    drawHud();renderBrain();}
+  drawSoma3D();
+  renderTelemetry();
+}
+requestAnimationFrame(t=>{last=t;requestAnimationFrame(frame);});
+initSoma();
+if(window.FLY_SOMA)log('全脑胞体点云已加载：'+FLY_SOMA.provenance.neurons_with_soma.toLocaleString()+
+  ' 个实测 soma，'+FLY_SOMA.provenance.sim_neurons_mapped+'/94 个仿真神经元可发光','ev-learn');
+log(window.FLY_BRAIN?
+  '系统就绪：真实连接组数据已加载 ('+FLY_BRAIN.provenance.total_edges_scanned.toLocaleString()+' 条全脑边中筛出子图)。'
+  :'警告：未找到 brain-data.js，请先运行 tools/extract_brain.py','ev-learn');
